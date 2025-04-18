@@ -6,7 +6,7 @@ async function bootstrap() {
 
     // CORS para permitir apenas o front-end
     app.enableCors({
-      origin: 'http://localhost:3001',
+      origin: 'https://gerador-desculpas-openai-fronten-production.up.railway.app',
     });
 
   await app.listen(process.env.PORT ?? 3000);
