@@ -1,0 +1,4 @@
+# /scripts/requirements.txt ou /requirements.txt
+crewai
+langchain-openai  # Ou a biblioteca LLM específica que CrewAI usa no seu setup
+python-dotenv     # Opcional, mas boa prática

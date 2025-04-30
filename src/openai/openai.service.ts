@@ -1,83 +1,113 @@
 // src/openai/openai.service.ts
-import { Injectable, Logger } from '@nestjs/common'; // Importe o Logger para mensagens
+import { Injectable, Logger, InternalServerErrorException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import OpenAI from 'openai';
+import { spawn } from 'child_process'; // Importar spawn
+import * as path from 'path'; // Importar path para lidar com caminhos de arquivo
+
+// REMOVA a importação do OpenAI se você não for mais usá-lo diretamente neste serviço
+// import OpenAI from 'openai';
 
 @Injectable()
 export class OpenaiService {
-  private openai: OpenAI;
-  private readonly logger = new Logger(OpenaiService.name); // Logger opcional, mas útil
+  // REMOVA a instância do OpenAI se não for mais usada diretamente
+  // private openai: OpenAI;
+  private readonly logger = new Logger(OpenaiService.name);
+  private readonly apiKey: string; // Armazenar a chave para passar ao Python
+  private readonly modelName = 'gpt-4o'; // Modelo a ser usado pelo Python (pode vir do config também)
+  private readonly pythonExecutable: string; // Caminho para o executável Python
 
   constructor(private configService: ConfigService) {
-    // 1. Buscar a chave de API do .env usando o ConfigService
-    const apiKey = this.configService.get<string>('OPENAI_API_KEY'); // Use o mesmo nome da variável no .env
+    this.apiKey = this.configService.get<string>('OPENAI_API_KEY') || '';
+    this.pythonExecutable = this.configService.get<string>('PYTHON_EXECUTABLE_PATH', 'python3'); // Default 'python3', pode configurar no .env
 
-    // 2. Verificar se a chave foi encontrada (MUITO IMPORTANTE!)
-    if (!apiKey) {
-      this.logger.error('Chave da API OpenAI (OPENAI_API_KEY) não encontrada nas variáveis de ambiente!');
-      // Você pode lançar um erro para impedir que a aplicação inicie sem a chave
-      throw new Error('Configuração crítica faltando: OPENAI_API_KEY não está definida no ambiente.');
+    if (!this.apiKey) {
+      this.logger.error('Chave da API OpenAI (OPENAI_API_KEY) não encontrada!');
+      throw new Error('Configuração crítica faltando: OPENAI_API_KEY não definida.');
     }
 
-    // 3. Inicializar o OpenAI com a chave buscada do .env
-    this.openai = new OpenAI({
-      apiKey: apiKey, // <-- Use a variável 'apiKey' aqui
-    });
-
-    this.logger.log('Serviço OpenAI inicializado com sucesso.'); // Mensagem de confirmação
+    // NÃO inicializamos mais o cliente OpenAI aqui diretamente
+    this.logger.log(`Serviço configurado para usar Python em: ${this.pythonExecutable}`);
   }
 
-  // O restante do seu serviço (buildPrompt, chatWithExcuseBot) permanece igual...
+  // REMOVA o método buildPrompt se a lógica do prompt agora está no Python/CrewAI
+  /*
   private buildPrompt(userProblem: string): string {
-    return `
-Você é um desenvolvedor sênior especializado em criar desculpas técnicas convincentes.
-
-Sua missão é receber uma descrição do problema e responder com uma desculpa técnica que pareça legítima, mas com um toque de humor, sarcasmo e criatividade.
-
-Regras:
-- A desculpa precisa parecer plausível para um leigo.
-- Use termos técnicos de forma confiante.
-- Seja sutilmente sarcástico e criativo.
-- Evite repetir respostas.
-
-Exemplos:
-
-Problema: "O deploy falhou"
-Resposta: "Foi um conflito inesperado com o cache do Cloudflare combinado com um rollback automático mal configurado. Já estou ajustando o YAML da pipeline."
-
-Problema: "O site está fora do ar"
-Resposta: "Ah, isso é clássico. O DNS ainda está propagando. Pode levar até 48 horas, sabe como é..."
-
-Problema: "${userProblem}"
-Resposta:
-    `;
+    // ... (código antigo)
   }
+  */
 
   async chatWithExcuseBot(userProblem: string): Promise<string> {
-    const prompt = this.buildPrompt(userProblem);
+    this.logger.log(`Iniciando processo filho Python para gerar desculpa para: "${userProblem}"`);
 
-    try { // Adicionar try/catch para melhor tratamento de erro da API
-        const res = await this.openai.chat.completions.create({
-          model: 'gpt-4o',
-          messages: [{ role: 'user', content: prompt }],
-          temperature: 0.9,
-        });
+    // Caminho para o script Python (ajuste se necessário)
+    // __dirname geralmente aponta para a pasta 'dist' após a compilação,
+    // então subir dois níveis pode levar à raiz do projeto. Teste isso!
+    // Alternativamente, use um caminho relativo à raiz do projeto configurado.
+    // const scriptPath = path.join(__dirname, '..', '..', 'scripts', 'crew_excuse_generator.py');
+    // Ou um caminho mais direto se souber a estrutura final:
+    const scriptPath = path.resolve('./scripts/crew_excuse_generator.py');
 
-        // Usar optional chaining para mais segurança ao acessar a resposta
-        const respostaFinal = res.choices[0]?.message?.content;
+    this.logger.debug(`Caminho do script Python: ${scriptPath}`);
+    this.logger.debug(`Executável Python: ${this.pythonExecutable}`);
 
-        if (!respostaFinal) {
-            this.logger.error('Resposta inesperada ou vazia da API OpenAI.', res);
-            throw new Error('Não foi possível obter uma resposta válida da IA.');
+    // Usaremos uma Promise para lidar com o processo assíncrono do spawn
+    return new Promise((resolve, reject) => {
+      let scriptOutput = '';
+      let scriptError = '';
+
+      // Variáveis de ambiente para o processo filho Python
+      const env = {
+        ...process.env, // Herda o ambiente atual (importante para PATH, etc.)
+        OPENAI_API_KEY_FOR_PYTHON: this.apiKey, // Passa a chave de API
+        OPENAI_MODEL_FOR_PYTHON: this.modelName, // Passa o nome do modelo
+        // PYTHONUNBUFFERED: '1' // Pode ser útil para garantir que a saída não seja bufferizada
+      };
+
+      // Spawn o processo Python
+      // Passa o 'userProblem' como argumento de linha de comando
+      const pythonProcess = spawn(this.pythonExecutable, [scriptPath, userProblem], { env });
+
+      // Capturar saída padrão (stdout) do script Python
+      pythonProcess.stdout.on('data', (data) => {
+        const outputChunk = data.toString();
+        this.logger.debug(`[Python STDOUT]: ${outputChunk}`);
+        scriptOutput += outputChunk;
+      });
+
+      // Capturar saída de erro (stderr) do script Python
+      pythonProcess.stderr.on('data', (data) => {
+        const errorChunk = data.toString();
+        this.logger.error(`[Python STDERR]: ${errorChunk}`);
+        scriptError += errorChunk; // Acumula mensagens de erro
+      });
+
+      // Lidar com erros no próprio processo spawn (ex: Python não encontrado)
+      pythonProcess.on('error', (error) => {
+        this.logger.error(`Falha ao iniciar o processo filho Python: ${error.message}`, error.stack);
+        reject(new InternalServerErrorException(`Falha ao executar o script Python: ${error.message}`));
+      });
+
+      // Lidar com o fechamento do processo Python
+      pythonProcess.on('close', (code) => {
+        this.logger.log(`Processo filho Python finalizado com código: ${code}`);
+
+        if (code === 0) {
+          // Sucesso: Verificar se houve erro impresso em stderr antes de resolver
+           if (scriptError.includes("PYTHON_ERROR:")) {
+             this.logger.error(`Erro reportado pelo script Python mesmo com código 0: ${scriptError}`);
+             reject(new InternalServerErrorException(`Erro no script Python: ${scriptError.replace("PYTHON_ERROR:", "").trim()}`));
+          } else if (!scriptOutput.trim()) {
+             this.logger.error('Script Python finalizou com sucesso, mas sem saída (stdout).');
+            reject(new InternalServerErrorException('O script de IA não retornou uma resposta.'));
+          } else {
+            resolve(scriptOutput.trim()); // Retorna a saída limpa
+          }
+        } else {
+          // Erro: O script Python terminou com um código de erro
+          this.logger.error(`Script Python terminou com erro (código ${code}). Saída de erro: ${scriptError}`);
+          reject(new InternalServerErrorException(`O script Python falhou (código ${code}). Detalhes: ${scriptError || 'Nenhuma saída de erro específica.'}`));
         }
-
-        // Usar trim() para remover espaços em branco extras no início/fim
-        return respostaFinal.trim();
-
-    } catch (error) {
-        this.logger.error(`Erro ao chamar a API OpenAI: ${error.message}`, error.stack);
-        // Relançar o erro ou retornar uma mensagem padrão
-        throw new Error('Falha ao comunicar com o serviço de IA.');
-    }
+      });
+    });
   }
 }
